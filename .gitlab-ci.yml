@@ -1,0 +1,86 @@
+stages:
+  - sast
+  - sca
+  - container_scan
+  - dast
+  - gatekeeper
+
+variables:
+  DOCKER_IMAGE: "myapp:latest"
+
+# 1️⃣ Static Application Security Testing (SAST)
+sast:
+  stage: sast
+  image: docker:latest
+  services:
+    - docker:dind
+  script:
+    - echo "🔍 Running SAST with Semgrep..."
+    - apk add --no-cache python3 py3-pip
+    - pip install semgrep
+    - semgrep --config auto .
+  allow_failure: false
+  only:
+    - main
+    - merge_requests
+
+# 2️⃣ Software Composition Analysis (SCA)
+sca:
+  stage: sca
+  image: node:18
+  script:
+    - echo "🔗 Running dependency scan with Snyk..."
+    - npm install -g snyk
+    - snyk test || true
+  allow_failure: false
+  only:
+    - main
+    - merge_requests
+  variables:
+    SNYK_TOKEN: $SNYK_TOKEN
+
+# 3️⃣ Container Image Scanning
+container_scan:
+  stage: container_scan
+  image: aquasec/trivy:latest
+  script:
+    - echo "🐳 Building and scanning Docker image..."
+    - docker build -t $DOCKER_IMAGE .
+    - trivy image --exit-code 1 --severity HIGH,CRITICAL $DOCKER_IMAGE
+  allow_failure: false
+  only:
+    - main
+    - merge_requests
+
+# 4️⃣ Dynamic Application Security Testing (DAST)
+dast:
+  stage: dast
+  image: owasp/zap2docker-stable
+  script:
+    - echo "🌐 Running OWASP ZAP scan..."
+    - zap-baseline.py -t http://example.com -r zap_report.html || true
+  artifacts:
+    paths:
+      - zap_report.html
+  allow_failure: false
+  only:
+    - main
+    - merge_requests
+
+# 5️⃣ Gatekeeper – Stop deployment if critical issues found
+gatekeeper:
+  stage: gatekeeper
+  script:
+    - echo "🚫 Checking for failed security stages..."
+    - if [ "$CI_JOB_STATUS" == "failed" ]; then
+        echo "❌ Security check failed. Stopping deployment.";
+        exit 1;
+      else
+        echo "✅ All security checks passed. Proceeding.";
+      fi
+  needs:
+    - sast
+    - sca
+    - container_scan
+    - dast
+  when: on_failure
